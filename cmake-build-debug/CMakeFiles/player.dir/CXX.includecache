@@ -6,9 +6,11 @@
 
 #IncludeRegexTransform: 
 
-/home/bbs/code/av/player/AVPacketQueue.cpp
-AVPacketQueue.h
-/home/bbs/code/av/player/AVPacketQueue.h
+/home/bbs/code/av/player/AVFrameQueue.h
+queue.h
+/home/bbs/code/av/player/queue.h
+libavutil/frame.h
+-
 
 /home/bbs/code/av/player/AVPacketQueue.h
 queue.h
@@ -27,6 +29,52 @@ libavutil/timestamp.h
 -
 libavutil/mathematics.h
 -
+
+/home/bbs/code/av/player/DemuxThread.h
+string
+-
+iostream
+-
+Thread.h
+/home/bbs/code/av/player/Thread.h
+AVPacketQueue.h
+/home/bbs/code/av/player/AVPacketQueue.h
+libavformat/avformat.h
+-
+libavcodec/avcodec.h
+-
+libavutil/avutil.h
+-
+libavutil/mem.h
+-
+libavutil/rational.h
+-
+libavutil/timestamp.h
+-
+libavutil/mathematics.h
+-
+
+/home/bbs/code/av/player/Thread.h
+thread
+-
+
+/home/bbs/code/av/player/decodecthread.h
+DemuxThread.h
+/home/bbs/code/av/player/DemuxThread.h
+AVFrameQueue.h
+/home/bbs/code/av/player/AVFrameQueue.h
+AVPacketQueue.h
+/home/bbs/code/av/player/AVPacketQueue.h
+
+/home/bbs/code/av/player/main.cpp
+iostream
+-
+DemuxThread.h
+/home/bbs/code/av/player/DemuxThread.h
+AVFrameQueue.h
+/home/bbs/code/av/player/AVFrameQueue.h
+decodecthread.h
+/home/bbs/code/av/player/decodecthread.h
 
 /home/bbs/code/av/player/queue.h
 queue
