@@ -20,8 +20,8 @@ int AVPacketQueue::Push(AVPacket *val) {
 
 
     AVPacket *tmp_pkt=av_packet_alloc();
-    av_packet_move_ref(tmp_pkt,tmp_pkt);
-    return queue_.Push(val);
+    av_packet_move_ref(tmp_pkt,val);
+    return queue_.Push(tmp_pkt);
 }
 
 AVPacket *AVPacketQueue::Pop(const int timeout){

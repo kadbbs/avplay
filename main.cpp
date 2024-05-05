@@ -14,7 +14,7 @@ int main(int argc ,char **argv) {
     demuxThread->Init(argv[1]);
     demuxThread->Start();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(5*1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50*1000));
 
     printf("audio_packet_queue size:%d",audio_packet_queue.Size());
     printf("video_packet_queue size %d",video_packet_queue.Size());
