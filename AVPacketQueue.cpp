@@ -33,3 +33,7 @@ AVPacket *AVPacketQueue::Pop(const int timeout){
 
     return tmp_pkt;
 }
+
+int AVPacketQueue::Size() {
+    return queue_.Size();
+}

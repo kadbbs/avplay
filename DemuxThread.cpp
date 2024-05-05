@@ -100,8 +100,12 @@ void DemuxThread::Run() {
         }
         if(pkt.stream_index==audio_index){
             ret=audio_queue_->Push(&pkt);
+            printf("audio_packet_queue size:%d\n",audio_queue_->Size());
+
         }else if(pkt.stream_index==video_index){
             ret=video_queue_->Push(&pkt);
+            printf("video_packet_queue size %d\n",video_queue_->Size());
+
         }else{
             av_packet_unref(&pkt);
         }
