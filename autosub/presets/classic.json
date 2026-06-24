@@ -1,0 +1,11 @@
+{
+  "name": "classic",
+  "font_name": "Arial",
+  "font_size": 36,
+  "primary_color": "&H00FFFFFF",
+  "outline_color": "&H00000000",
+  "outline": 2,
+  "shadow": 1,
+  "alignment": 2,
+  "margin_v": 40
+}

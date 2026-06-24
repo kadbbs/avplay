@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autosub-studio"
+version = "0.1.0"
+description = "Local video subtitle generation, editing, burning and batch processing tool."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.0.0"]
+openai-whisper = ["openai-whisper>=20231117"]
+
+[project.scripts]
+autosub = "autosub.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
