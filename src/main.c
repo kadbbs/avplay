@@ -6,17 +6,54 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/audio_fifo.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 
-typedef struct Decoder {
-    AVFormatContext *fmt;
+typedef struct Options {
+    const char *input;
+    const char *output;
+    const char *cover;
+    const char *report;
+    int width;
+    int video_bitrate;
+    int audio_bitrate;
+    int audio_rate;
+} Options;
+
+typedef struct StreamCtx {
+    int index;
+    AVStream *stream;
     AVCodecContext *dec;
-    int stream_index;
-} Decoder;
+} StreamCtx;
+
+typedef struct App {
+    Options opt;
+    AVFormatContext *ifmt;
+    AVFormatContext *ofmt;
+    StreamCtx vin;
+    StreamCtx ain;
+    AVStream *vout;
+    AVStream *aout;
+    AVCodecContext *venc;
+    AVCodecContext *aenc;
+    struct SwsContext *sws_yuv;
+    struct SwsContext *sws_rgb;
+    SwrContext *swr;
+    AVAudioFifo *fifo;
+    int have_video;
+    int have_audio;
+    int wrote_cover;
+    int64_t packets;
+    int64_t video_frames;
+    int64_t audio_frames;
+    int64_t video_pts;
+    int64_t audio_pts;
+} App;
 
 static int fail(const char *message, int err)
 {
@@ -34,219 +71,377 @@ static void usage(const char *argv0)
 {
     fprintf(stderr,
             "Usage:\n"
-            "  %s info <input>\n"
-            "  %s thumbnail <input> <output.ppm> [width]\n"
-            "  %s audio-pcm <input> <output.s16le> [seconds]\n",
-            argv0, argv0, argv0);
+            "  %s normalize <input> <output.mp4> [--width N] [--cover cover.ppm] [--report report.json]\n",
+            argv0);
 }
 
-static void close_decoder(Decoder *d)
+static int parse_options(int argc, char **argv, Options *opt)
 {
-    avcodec_free_context(&d->dec);
-    avformat_close_input(&d->fmt);
+    memset(opt, 0, sizeof(*opt));
+    opt->width = 1280;
+    opt->video_bitrate = 2500;
+    opt->audio_bitrate = 128;
+    opt->audio_rate = 48000;
+    if (argc < 4 || strcmp(argv[1], "normalize") != 0) return AVERROR(EINVAL);
+    opt->input = argv[2];
+    opt->output = argv[3];
+    for (int i = 4; i < argc; i++) {
+        if (strcmp(argv[i], "--width") == 0 && i + 1 < argc) opt->width = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--cover") == 0 && i + 1 < argc) opt->cover = argv[++i];
+        else if (strcmp(argv[i], "--report") == 0 && i + 1 < argc) opt->report = argv[++i];
+        else return AVERROR(EINVAL);
+    }
+    return 0;
 }
 
-static int open_decoder(const char *input, enum AVMediaType type, Decoder *out)
+static void cleanup(App *app)
+{
+    if (app->ofmt && !(app->ofmt->oformat->flags & AVFMT_NOFILE)) avio_closep(&app->ofmt->pb);
+    sws_freeContext(app->sws_yuv);
+    sws_freeContext(app->sws_rgb);
+    swr_free(&app->swr);
+    av_audio_fifo_free(app->fifo);
+    avcodec_free_context(&app->vin.dec);
+    avcodec_free_context(&app->ain.dec);
+    avcodec_free_context(&app->venc);
+    avcodec_free_context(&app->aenc);
+    avformat_close_input(&app->ifmt);
+    avformat_free_context(app->ofmt);
+}
+
+static int open_decoder(AVFormatContext *fmt, enum AVMediaType type, StreamCtx *s)
 {
     int ret;
     const AVCodec *codec = NULL;
+    memset(s, 0, sizeof(*s));
+    s->index = -1;
+    ret = av_find_best_stream(fmt, type, -1, -1, &codec, 0);
+    if (ret < 0) return ret;
+    s->index = ret;
+    s->stream = fmt->streams[s->index];
+    s->dec = avcodec_alloc_context3(codec);
+    if (!s->dec) return AVERROR(ENOMEM);
+    ret = avcodec_parameters_to_context(s->dec, s->stream->codecpar);
+    if (ret < 0) return ret;
+    return avcodec_open2(s->dec, codec, NULL);
+}
 
-    memset(out, 0, sizeof(*out));
-    out->stream_index = -1;
+static int even(int value) { return value > 2 ? value & ~1 : 2; }
 
-    ret = avformat_open_input(&out->fmt, input, NULL, NULL);
-    if (ret < 0) return fail("Could not open input", ret);
+static AVRational video_time_base(StreamCtx *s)
+{
+    AVRational rate = s->stream->avg_frame_rate.num > 0 ? s->stream->avg_frame_rate : s->stream->r_frame_rate;
+    if (rate.num <= 0 || rate.den <= 0) rate = (AVRational){25, 1};
+    return av_inv_q(rate);
+}
 
-    ret = avformat_find_stream_info(out->fmt, NULL);
-    if (ret < 0) return fail("Could not read stream info", ret);
-
-    ret = av_find_best_stream(out->fmt, type, -1, -1, &codec, 0);
-    if (ret < 0) return fail("Could not find requested stream", ret);
-    out->stream_index = ret;
-
-    out->dec = avcodec_alloc_context3(codec);
-    if (!out->dec) return AVERROR(ENOMEM);
-
-    ret = avcodec_parameters_to_context(out->dec, out->fmt->streams[out->stream_index]->codecpar);
-    if (ret < 0) return fail("Could not copy codec parameters", ret);
-
-    ret = avcodec_open2(out->dec, codec, NULL);
-    if (ret < 0) return fail("Could not open decoder", ret);
+static int add_video(App *app)
+{
+    int ret;
+    const AVCodec *codec = avcodec_find_encoder_by_name("libx264");
+    int w = app->vin.dec->width;
+    int h = app->vin.dec->height;
+    if (!codec) codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+    if (!codec) return AVERROR_ENCODER_NOT_FOUND;
+    if (w > app->opt.width) {
+        h = (int)((int64_t)h * app->opt.width / w);
+        w = app->opt.width;
+    }
+    w = even(w);
+    h = even(h);
+    app->venc = avcodec_alloc_context3(codec);
+    if (!app->venc) return AVERROR(ENOMEM);
+    app->venc->width = w;
+    app->venc->height = h;
+    app->venc->pix_fmt = AV_PIX_FMT_YUV420P;
+    app->venc->time_base = video_time_base(&app->vin);
+    app->venc->framerate = av_inv_q(app->venc->time_base);
+    app->venc->bit_rate = (int64_t)app->opt.video_bitrate * 1000;
+    app->venc->gop_size = 60;
+    if (app->ofmt->oformat->flags & AVFMT_GLOBALHEADER) app->venc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    av_opt_set(app->venc->priv_data, "preset", "veryfast", 0);
+    ret = avcodec_open2(app->venc, codec, NULL);
+    if (ret < 0) return ret;
+    app->vout = avformat_new_stream(app->ofmt, NULL);
+    if (!app->vout) return AVERROR(ENOMEM);
+    app->vout->time_base = app->venc->time_base;
+    ret = avcodec_parameters_from_context(app->vout->codecpar, app->venc);
+    if (ret < 0) return ret;
+    app->sws_yuv = sws_getContext(app->vin.dec->width, app->vin.dec->height, app->vin.dec->pix_fmt,
+                                  w, h, app->venc->pix_fmt, SWS_BICUBIC, NULL, NULL, NULL);
+    if (!app->sws_yuv) return AVERROR(EINVAL);
+    if (app->opt.cover) {
+        app->sws_rgb = sws_getContext(app->vin.dec->width, app->vin.dec->height, app->vin.dec->pix_fmt,
+                                      w, h, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
+        if (!app->sws_rgb) return AVERROR(EINVAL);
+    }
     return 0;
 }
 
-static int command_info(const char *input)
+static enum AVSampleFormat choose_sample_fmt(const AVCodec *codec)
 {
-    int ret;
-    AVFormatContext *fmt = NULL;
-
-    ret = avformat_open_input(&fmt, input, NULL, NULL);
-    if (ret < 0) return fail("Could not open input", ret);
-    ret = avformat_find_stream_info(fmt, NULL);
-    if (ret < 0) {
-        avformat_close_input(&fmt);
-        return fail("Could not read stream info", ret);
+    if (!codec->sample_fmts) return AV_SAMPLE_FMT_FLTP;
+    for (const enum AVSampleFormat *p = codec->sample_fmts; *p != AV_SAMPLE_FMT_NONE; p++) {
+        if (*p == AV_SAMPLE_FMT_FLTP) return *p;
     }
-
-    printf("File: %s\n", input);
-    printf("Container: %s\n", fmt->iformat ? fmt->iformat->long_name : "unknown");
-    printf("Duration: %.3f seconds\n", fmt->duration == AV_NOPTS_VALUE ? 0.0 : fmt->duration / (double)AV_TIME_BASE);
-    printf("Streams: %u\n\n", fmt->nb_streams);
-
-    for (unsigned i = 0; i < fmt->nb_streams; i++) {
-        AVCodecParameters *par = fmt->streams[i]->codecpar;
-        printf("[%u] type=%s codec=%s", i,
-               av_get_media_type_string(par->codec_type),
-               avcodec_get_name(par->codec_id));
-        if (par->codec_type == AVMEDIA_TYPE_VIDEO) {
-            printf(" %dx%d", par->width, par->height);
-        } else if (par->codec_type == AVMEDIA_TYPE_AUDIO) {
-            printf(" %dHz channels=%d", par->sample_rate, par->ch_layout.nb_channels);
-        }
-        printf("\n");
-    }
-
-    avformat_close_input(&fmt);
-    return 0;
+    return codec->sample_fmts[0];
 }
 
-static int decode_first_frame(Decoder *d, AVFrame *frame)
+static int add_audio(App *app)
 {
     int ret;
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    if (!codec) return AVERROR_ENCODER_NOT_FOUND;
+    app->aenc = avcodec_alloc_context3(codec);
+    if (!app->aenc) return AVERROR(ENOMEM);
+    app->aenc->sample_rate = app->opt.audio_rate;
+    app->aenc->sample_fmt = choose_sample_fmt(codec);
+    app->aenc->bit_rate = (int64_t)app->opt.audio_bitrate * 1000;
+    app->aenc->time_base = (AVRational){1, app->aenc->sample_rate};
+    av_channel_layout_default(&app->aenc->ch_layout, 2);
+    if (app->ofmt->oformat->flags & AVFMT_GLOBALHEADER) app->aenc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    ret = avcodec_open2(app->aenc, codec, NULL);
+    if (ret < 0) return ret;
+    app->aout = avformat_new_stream(app->ofmt, NULL);
+    if (!app->aout) return AVERROR(ENOMEM);
+    app->aout->time_base = app->aenc->time_base;
+    ret = avcodec_parameters_from_context(app->aout->codecpar, app->aenc);
+    if (ret < 0) return ret;
+    ret = swr_alloc_set_opts2(&app->swr, &app->aenc->ch_layout, app->aenc->sample_fmt, app->aenc->sample_rate,
+                              &app->ain.dec->ch_layout, app->ain.dec->sample_fmt, app->ain.dec->sample_rate, 0, NULL);
+    if (ret < 0) return ret;
+    ret = swr_init(app->swr);
+    if (ret < 0) return ret;
+    app->fifo = av_audio_fifo_alloc(app->aenc->sample_fmt, app->aenc->ch_layout.nb_channels,
+                                    app->aenc->frame_size > 0 ? app->aenc->frame_size : 1024);
+    return app->fifo ? 0 : AVERROR(ENOMEM);
+}
+
+static int write_packet(App *app, AVCodecContext *enc, AVStream *stream, AVPacket *pkt)
+{
+    av_packet_rescale_ts(pkt, enc->time_base, stream->time_base);
+    pkt->stream_index = stream->index;
+    return av_interleaved_write_frame(app->ofmt, pkt);
+}
+
+static int encode(App *app, AVCodecContext *enc, AVStream *stream, AVFrame *frame)
+{
+    int ret = avcodec_send_frame(enc, frame);
     AVPacket *pkt = av_packet_alloc();
-    if (!pkt) return AVERROR(ENOMEM);
-
-    while ((ret = av_read_frame(d->fmt, pkt)) >= 0) {
-        if (pkt->stream_index != d->stream_index) {
-            av_packet_unref(pkt);
-            continue;
-        }
-        ret = avcodec_send_packet(d->dec, pkt);
+    if (ret < 0 || !pkt) return ret < 0 ? ret : AVERROR(ENOMEM);
+    while ((ret = avcodec_receive_packet(enc, pkt)) >= 0) {
+        ret = write_packet(app, enc, stream, pkt);
         av_packet_unref(pkt);
         if (ret < 0) break;
-        ret = avcodec_receive_frame(d->dec, frame);
-        if (ret == AVERROR(EAGAIN)) continue;
-        av_packet_free(&pkt);
-        return ret < 0 ? ret : 1;
     }
-
     av_packet_free(&pkt);
-    return 0;
+    return ret == AVERROR(EAGAIN) || ret == AVERROR_EOF ? 0 : ret;
 }
 
-static int command_thumbnail(const char *input, const char *output, int width)
+static AVFrame *video_frame(enum AVPixelFormat fmt, int w, int h)
 {
-    int ret, height;
-    Decoder d;
-    AVFrame *frame = av_frame_alloc();
+    AVFrame *f = av_frame_alloc();
+    if (!f) return NULL;
+    f->format = fmt;
+    f->width = w;
+    f->height = h;
+    if (av_frame_get_buffer(f, 32) < 0) av_frame_free(&f);
+    return f;
+}
+
+static int write_cover(App *app, AVFrame *src)
+{
+    FILE *fp;
     uint8_t *rgb[4] = {0};
     int linesize[4] = {0};
-    struct SwsContext *sws = NULL;
-    FILE *fp = NULL;
+    int ret;
+    if (!app->opt.cover || app->wrote_cover) return 0;
+    ret = av_image_alloc(rgb, linesize, app->venc->width, app->venc->height, AV_PIX_FMT_RGB24, 1);
+    if (ret < 0) return ret;
+    sws_scale(app->sws_rgb, (const uint8_t * const *)src->data, src->linesize, 0, src->height, rgb, linesize);
+    fp = fopen(app->opt.cover, "wb");
+    if (!fp) { av_freep(&rgb[0]); return AVERROR(errno); }
+    fprintf(fp, "P6\n%d %d\n255\n", app->venc->width, app->venc->height);
+    for (int y = 0; y < app->venc->height; y++) fwrite(rgb[0] + y * linesize[0], 1, (size_t)app->venc->width * 3, fp);
+    fclose(fp);
+    av_freep(&rgb[0]);
+    app->wrote_cover = 1;
+    return 0;
+}
 
-    if (!frame) return AVERROR(ENOMEM);
-    ret = open_decoder(input, AVMEDIA_TYPE_VIDEO, &d);
-    if (ret < 0) goto done;
-    ret = decode_first_frame(&d, frame);
-    if (ret <= 0) { ret = fail("No video frame decoded", AVERROR_EOF); goto done; }
-
-    height = (int)((int64_t)frame->height * width / frame->width);
-    sws = sws_getContext(frame->width, frame->height, frame->format,
-                         width, height, AV_PIX_FMT_RGB24,
-                         SWS_BILINEAR, NULL, NULL, NULL);
-    if (!sws) { ret = AVERROR(EINVAL); goto done; }
-    ret = av_image_alloc(rgb, linesize, width, height, AV_PIX_FMT_RGB24, 1);
-    if (ret < 0) goto done;
-    sws_scale(sws, (const uint8_t * const *)frame->data, frame->linesize, 0, frame->height, rgb, linesize);
-
-    fp = fopen(output, "wb");
-    if (!fp) { ret = AVERROR(errno); goto done; }
-    fprintf(fp, "P6\n%d %d\n255\n", width, height);
-    for (int y = 0; y < height; y++) fwrite(rgb[0] + y * linesize[0], 1, (size_t)width * 3, fp);
-    printf("Wrote thumbnail: %s (%dx%d)\n", output, width, height);
-    ret = 0;
-
-done:
-    if (fp) fclose(fp);
-    if (rgb[0]) av_freep(&rgb[0]);
-    sws_freeContext(sws);
-    av_frame_free(&frame);
-    close_decoder(&d);
+static int process_video(App *app, AVFrame *decoded)
+{
+    int ret;
+    AVFrame *out = video_frame(app->venc->pix_fmt, app->venc->width, app->venc->height);
+    if (!out) return AVERROR(ENOMEM);
+    ret = write_cover(app, decoded);
+    if (ret < 0) { av_frame_free(&out); return ret; }
+    sws_scale(app->sws_yuv, (const uint8_t * const *)decoded->data, decoded->linesize,
+              0, decoded->height, out->data, out->linesize);
+    out->pts = app->video_pts++;
+    app->video_frames++;
+    ret = encode(app, app->venc, app->vout, out);
+    av_frame_free(&out);
     return ret;
 }
 
-static int command_audio_pcm(const char *input, const char *output, double seconds)
+static AVFrame *audio_frame(AVCodecContext *enc, int samples)
+{
+    AVFrame *f = av_frame_alloc();
+    if (!f) return NULL;
+    f->format = enc->sample_fmt;
+    f->sample_rate = enc->sample_rate;
+    f->nb_samples = samples;
+    if (av_channel_layout_copy(&f->ch_layout, &enc->ch_layout) < 0 || av_frame_get_buffer(f, 0) < 0) av_frame_free(&f);
+    return f;
+}
+
+static int encode_fifo(App *app, int flush)
+{
+    int ret = 0;
+    int frame_size = app->aenc->frame_size > 0 ? app->aenc->frame_size : 1024;
+    while (av_audio_fifo_size(app->fifo) >= frame_size || (flush && av_audio_fifo_size(app->fifo) > 0)) {
+        int samples = av_audio_fifo_size(app->fifo);
+        AVFrame *frame;
+        if (!flush || samples > frame_size) samples = frame_size;
+        frame = audio_frame(app->aenc, samples);
+        if (!frame) return AVERROR(ENOMEM);
+        ret = av_audio_fifo_read(app->fifo, (void **)frame->data, samples);
+        if (ret < 0) { av_frame_free(&frame); return ret; }
+        frame->pts = app->audio_pts;
+        app->audio_pts += frame->nb_samples;
+        app->audio_frames++;
+        ret = encode(app, app->aenc, app->aout, frame);
+        av_frame_free(&frame);
+        if (ret < 0) return ret;
+    }
+    return 0;
+}
+
+static int process_audio(App *app, AVFrame *decoded)
+{
+    int ret, linesize = 0;
+    uint8_t **converted = NULL;
+    int samples = (int)av_rescale_rnd(swr_get_delay(app->swr, decoded->sample_rate) + decoded->nb_samples,
+                                      app->aenc->sample_rate, decoded->sample_rate, AV_ROUND_UP);
+    ret = av_samples_alloc_array_and_samples(&converted, &linesize, app->aenc->ch_layout.nb_channels,
+                                             samples, app->aenc->sample_fmt, 0);
+    if (ret < 0) return ret;
+    ret = swr_convert(app->swr, converted, samples, (const uint8_t **)decoded->extended_data, decoded->nb_samples);
+    if (ret > 0) {
+        int grow = av_audio_fifo_realloc(app->fifo, av_audio_fifo_size(app->fifo) + ret);
+        if (grow < 0) {
+            ret = grow;
+            goto done;
+        }
+        av_audio_fifo_write(app->fifo, (void **)converted, ret);
+        ret = encode_fifo(app, 0);
+    }
+done:
+    av_freep(&converted[0]);
+    av_freep(&converted);
+    return ret < 0 ? ret : 0;
+}
+
+static int decode_packet(App *app, StreamCtx *s, AVPacket *pkt)
+{
+    int ret = avcodec_send_packet(s->dec, pkt);
+    AVFrame *frame = av_frame_alloc();
+    if (ret < 0 || !frame) return ret < 0 ? ret : AVERROR(ENOMEM);
+    while ((ret = avcodec_receive_frame(s->dec, frame)) >= 0) {
+        ret = s->dec->codec_type == AVMEDIA_TYPE_VIDEO ? process_video(app, frame) : process_audio(app, frame);
+        av_frame_unref(frame);
+        if (ret < 0) break;
+    }
+    av_frame_free(&frame);
+    return ret == AVERROR(EAGAIN) || ret == AVERROR_EOF ? 0 : ret;
+}
+
+static int write_report(App *app)
+{
+    FILE *fp;
+    if (!app->opt.report) return 0;
+    fp = fopen(app->opt.report, "w");
+    if (!fp) return AVERROR(errno);
+    fprintf(fp,
+            "{\n"
+            "  \"input\": \"%s\",\n"
+            "  \"output\": \"%s\",\n"
+            "  \"packets_read\": %" PRId64 ",\n"
+            "  \"video_frames\": %" PRId64 ",\n"
+            "  \"audio_frames\": %" PRId64 ",\n"
+            "  \"width\": %d,\n"
+            "  \"height\": %d,\n"
+            "  \"audio_rate\": %d\n"
+            "}\n",
+            app->opt.input, app->opt.output, app->packets, app->video_frames, app->audio_frames,
+            app->have_video ? app->venc->width : 0, app->have_video ? app->venc->height : 0,
+            app->have_audio ? app->aenc->sample_rate : 0);
+    fclose(fp);
+    return 0;
+}
+
+static int normalize(App *app)
 {
     int ret;
-    Decoder d;
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
-    SwrContext *swr = NULL;
-    AVChannelLayout layout;
-    FILE *fp = NULL;
-    int64_t written = 0;
-    int max_samples = seconds > 0 ? (int)(seconds * 48000) : 0;
-
-    if (!pkt || !frame) return AVERROR(ENOMEM);
-    av_channel_layout_default(&layout, 2);
-    ret = open_decoder(input, AVMEDIA_TYPE_AUDIO, &d);
-    if (ret < 0) goto done;
-    fp = fopen(output, "wb");
-    if (!fp) { ret = AVERROR(errno); goto done; }
-
-    while ((ret = av_read_frame(d.fmt, pkt)) >= 0) {
-        if (pkt->stream_index != d.stream_index) { av_packet_unref(pkt); continue; }
-        ret = avcodec_send_packet(d.dec, pkt);
+    AVPacket *pkt;
+    ret = avformat_open_input(&app->ifmt, app->opt.input, NULL, NULL);
+    if (ret < 0) return fail("Could not open input", ret);
+    ret = avformat_find_stream_info(app->ifmt, NULL);
+    if (ret < 0) return fail("Could not read input info", ret);
+    ret = avformat_alloc_output_context2(&app->ofmt, NULL, "mp4", app->opt.output);
+    if (ret < 0) return fail("Could not create output", ret);
+    if (open_decoder(app->ifmt, AVMEDIA_TYPE_VIDEO, &app->vin) >= 0) {
+        app->have_video = 1;
+        if ((ret = add_video(app)) < 0) return fail("Could not add video output", ret);
+    }
+    if (open_decoder(app->ifmt, AVMEDIA_TYPE_AUDIO, &app->ain) >= 0) {
+        app->have_audio = 1;
+        if ((ret = add_audio(app)) < 0) return fail("Could not add audio output", ret);
+    }
+    if (!app->have_video && !app->have_audio) return fail("No audio/video stream", AVERROR_STREAM_NOT_FOUND);
+    if (!(app->ofmt->oformat->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&app->ofmt->pb, app->opt.output, AVIO_FLAG_WRITE);
+        if (ret < 0) return fail("Could not open output file", ret);
+    }
+    ret = avformat_write_header(app->ofmt, NULL);
+    if (ret < 0) return fail("Could not write header", ret);
+    pkt = av_packet_alloc();
+    if (!pkt) return AVERROR(ENOMEM);
+    while ((ret = av_read_frame(app->ifmt, pkt)) >= 0) {
+        app->packets++;
+        if (app->have_video && pkt->stream_index == app->vin.index) ret = decode_packet(app, &app->vin, pkt);
+        else if (app->have_audio && pkt->stream_index == app->ain.index) ret = decode_packet(app, &app->ain, pkt);
+        else ret = 0;
         av_packet_unref(pkt);
         if (ret < 0) break;
-        while ((ret = avcodec_receive_frame(d.dec, frame)) >= 0) {
-            uint8_t **out = NULL;
-            int linesize = 0;
-            int samples;
-            if (!swr) {
-                ret = swr_alloc_set_opts2(&swr, &layout, AV_SAMPLE_FMT_S16, 48000,
-                                          &frame->ch_layout, frame->format, frame->sample_rate, 0, NULL);
-                if (ret < 0 || (ret = swr_init(swr)) < 0) goto done;
-            }
-            samples = (int)av_rescale_rnd(swr_get_delay(swr, frame->sample_rate) + frame->nb_samples,
-                                          48000, frame->sample_rate, AV_ROUND_UP);
-            if (max_samples > 0 && written + samples > max_samples) samples = max_samples - (int)written;
-            if (samples <= 0) goto success;
-            ret = av_samples_alloc_array_and_samples(&out, &linesize, 2, samples, AV_SAMPLE_FMT_S16, 0);
-            if (ret < 0) goto done;
-            ret = swr_convert(swr, out, samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
-            if (ret > 0) {
-                fwrite(out[0], 1, (size_t)ret * 2 * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16), fp);
-                written += ret;
-            }
-            av_freep(&out[0]);
-            av_freep(&out);
-            av_frame_unref(frame);
-            if (max_samples > 0 && written >= max_samples) goto success;
-        }
-        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) break;
     }
-
-success:
-    printf("Wrote audio: %s (%" PRId64 " samples, stereo 48kHz s16le)\n", output, written);
-    ret = 0;
-
-done:
-    if (fp) fclose(fp);
-    swr_free(&swr);
-    av_channel_layout_uninit(&layout);
-    av_frame_free(&frame);
     av_packet_free(&pkt);
-    close_decoder(&d);
-    return ret;
+    if (app->have_video) {
+        decode_packet(app, &app->vin, NULL);
+        encode(app, app->venc, app->vout, NULL);
+    }
+    if (app->have_audio) {
+        decode_packet(app, &app->ain, NULL);
+        encode_fifo(app, 1);
+        encode(app, app->aenc, app->aout, NULL);
+    }
+    ret = av_write_trailer(app->ofmt);
+    if (ret < 0) return fail("Could not write trailer", ret);
+    ret = write_report(app);
+    if (ret < 0) return fail("Could not write report", ret);
+    printf("Normalized: %s -> %s\n", app->opt.input, app->opt.output);
+    return 0;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc < 3) { usage(argv[0]); return 1; }
-    if (strcmp(argv[1], "info") == 0 && argc == 3) return command_info(argv[2]) < 0;
-    if (strcmp(argv[1], "thumbnail") == 0 && (argc == 4 || argc == 5)) return command_thumbnail(argv[2], argv[3], argc == 5 ? atoi(argv[4]) : 320) < 0;
-    if (strcmp(argv[1], "audio-pcm") == 0 && (argc == 4 || argc == 5)) return command_audio_pcm(argv[2], argv[3], argc == 5 ? atof(argv[4]) : 0.0) < 0;
-    usage(argv[0]);
-    return 1;
+    App app;
+    int ret;
+    memset(&app, 0, sizeof(app));
+    ret = parse_options(argc, argv, &app.opt);
+    if (ret < 0) { usage(argv[0]); return 1; }
+    ret = normalize(&app);
+    cleanup(&app);
+    return ret < 0 ? 1 : 0;
 }

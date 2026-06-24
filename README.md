@@ -1,38 +1,33 @@
-# ffmpeg-five-lab
+# mediaforge
 
-一个用于学习 FFmpeg 五个常用 C API 模块的小项目。
+`mediaforge` 是第二版实用项目：把输入媒体规范化成网页友好的 MP4，并生成封面图和 JSON 报告。
 
-它提供三个命令：
-
-```bash
-./build/ff5lab info input.mp4
-./build/ff5lab thumbnail input.mp4 frame.ppm 480
-./build/ff5lab audio-pcm input.mp4 audio.s16le 3
+```text
+input media
+  -> libavformat 读取容器和 packet
+  -> libavcodec 解码/编码
+  -> libswscale 缩放视频和转像素格式
+  -> libswresample 重采样音频
+  -> output.mp4 + cover.ppm + report.json
 ```
-
-覆盖的模块：
-
-- `libavformat`：打开容器、读取流信息、解封装 packet。
-- `libavcodec`：打开 decoder，把 packet 解成 frame。
-- `libavutil`：错误处理、内存、图片 buffer、声道布局。
-- `libswscale`：视频缩放和像素格式转换。
-- `libswresample`：音频重采样和采样格式转换。
 
 ## 构建
 
 ```bash
-sudo apt-get install -y build-essential cmake pkg-config \
-  libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev
-
 cmake -S . -B build
 cmake --build build
 ```
 
-## 生成测试素材
+## 使用
 
 ```bash
-ffmpeg -y \
-  -f lavfi -i testsrc2=size=1280x720:rate=30 \
-  -f lavfi -i sine=frequency=880:sample_rate=44100 \
-  -t 5 -c:v libx264 -pix_fmt yuv420p -c:a aac demo.mp4
+./build/mediaforge normalize demo.mp4 normalized.mp4 \
+  --width 640 --cover cover.ppm --report report.json
 ```
+
+输出规格：
+
+- 视频：H.264 / yuv420p
+- 音频：AAC / stereo / 48 kHz
+- 封面：RGB PPM
+- 报告：JSON

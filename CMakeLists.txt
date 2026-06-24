@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(ffmpeg_five_lab C)
+project(mediaforge C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -15,9 +15,9 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libswresample
 )
 
-add_executable(ff5lab src/main.c)
-target_link_libraries(ff5lab PRIVATE PkgConfig::FFMPEG)
+add_executable(mediaforge src/main.c)
+target_link_libraries(mediaforge PRIVATE PkgConfig::FFMPEG)
 
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(ff5lab PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(mediaforge PRIVATE -Wall -Wextra -Wpedantic)
 endif()
