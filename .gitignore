@@ -1,0 +1,13 @@
+build/
+demo.mp4
+frame.ppm
+audio.s16le
+normalized.mp4
+cover.ppm
+report.json
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+output/
+logs/
