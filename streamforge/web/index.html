@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StreamForge Gateway</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <h1>StreamForge Gateway</h1>
+        <p>FFmpeg + RTSP + RTMP + HLS + WebRTC local streaming lab</p>
+      </div>
+      <div class="status">localhost</div>
+    </section>
+
+    <section class="panel">
+      <h2>Channel Preview</h2>
+      <div class="controls">
+        <label>
+          Channel
+          <input id="channel" value="demo" autocomplete="off">
+        </label>
+        <button id="apply">Apply</button>
+      </div>
+      <video id="video" controls muted playsinline></video>
+      <div class="links">
+        <a id="localHls" href="#">Local HLS</a>
+        <a id="mediamtxHls" href="#">MediaMTX HLS</a>
+        <a id="webrtc" href="#">WebRTC</a>
+        <span id="rtsp"></span>
+        <span id="rtmp"></span>
+      </div>
+    </section>
+
+    <section class="panel grid">
+      <div>
+        <h2>Start HLS</h2>
+        <pre>python3 -m streamforge.cli run-channel demo demo.mp4 --hls</pre>
+      </div>
+      <div>
+        <h2>Start WebRTC path</h2>
+        <pre>docker compose up -d mediamtx
+python3 -m streamforge.cli run-channel demo demo.mp4 --publish-rtsp</pre>
+      </div>
+    </section>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

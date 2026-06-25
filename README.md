@@ -1,105 +1,177 @@
-# AutoSub Studio
+# StreamForge Gateway
 
-AutoSub Studio 是一个基于 FFmpeg / FFprobe 和 Whisper 的本地视频字幕生产工作流工具。
+StreamForge Gateway 是一个把 **FFmpeg + RTSP + RTMP + HLS + WebRTC** 串起来的本地流媒体网关项目。
 
-第一版聚焦 CLI 闭环：
+它的目标不是写几个命令示例，而是做一个可运行、可扩展的流媒体实验台：
 
 ```text
-输入视频
-  -> ffprobe 检查媒体信息
-  -> FFmpeg 提取 16 kHz mono wav
-  -> Whisper / faster-whisper 语音识别
-  -> 字幕清洗
-  -> 导出 SRT / ASS / VTT
-  -> FFmpeg 烧录硬字幕或封装软字幕
-  -> 输出 report.json
+RTSP / RTMP / file input
+  -> FFmpeg probe / transcode / remux
+  -> HLS segment output
+  -> RTMP push
+  -> RTSP publish to MediaMTX
+  -> MediaMTX exposes RTSP / RTMP / HLS / WebRTC playback
+  -> local dashboard for preview links and channel status
 ```
 
-## 功能
+## 架构
 
-- 查看视频信息：`autosub info input.mp4`
-- 生成字幕：`autosub transcribe input.mp4 --lang zh --model small`
-- 烧录已有字幕：`autosub burn input.mp4 --subtitle input.srt`
-- 完整流程：`autosub all input.mp4 --lang zh --model small --style classic`
-- 批量处理：`autosub batch ./videos --recursive`
-- 导出 SRT / VTT / ASS
-- 支持 ASS 样式模板：`classic`、`short_video`、`course`
-- 输出每个任务的 `report.json`
+```text
+Camera / OBS / file
+        |
+        v
+   streamctl
+        |
+        +-- ffprobe: inspect input
+        |
+        +-- FFmpeg process per channel
+              |
+              +-- local HLS: runtime/hls/<channel>/index.m3u8
+              +-- RTMP push: rtmp://localhost:1935/<channel>
+              +-- RTSP publish: rtsp://localhost:8554/<channel>
+                                   |
+                                   v
+                                MediaMTX
+                                   |
+              +--------------------+--------------------+
+              |                    |                    |
+             RTSP                 HLS                WebRTC
+    rtsp://localhost:8554/x  http://localhost:8888/x  http://localhost:8889/x
+```
 
-## 安装
+## 为什么这样设计
 
-需要 Python 3.10+。
+- **FFmpeg**：负责协议输入、转码、切片、推流，是真正的数据处理核心。
+- **RTSP**：适合摄像头和局域网低延迟拉流。
+- **RTMP**：适合 OBS 推流和老直播工作流。
+- **HLS**：适合浏览器和点播式预览，延迟高但兼容性好。
+- **WebRTC**：适合浏览器低延迟预览，不建议从零实现，交给 MediaMTX。
 
-系统依赖：
+## 安装依赖
+
+系统需要：
 
 ```bash
-sudo apt-get update
 sudo apt-get install -y ffmpeg
 ```
 
-Python 依赖：
+推荐安装 MediaMTX：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker compose up -d mediamtx
 ```
 
-Whisper 后端二选一：
+如果不用 Docker，也可以下载 MediaMTX 二进制，然后使用本项目的配置：
 
 ```bash
-pip install faster-whisper
-```
-
-或：
-
-```bash
-pip install openai-whisper
+mediamtx configs/mediamtx.yml
 ```
 
 ## 快速开始
 
-开发模式直接运行：
+生成测试视频流：
 
 ```bash
-python3 main.py info demo.mp4
-python3 main.py transcribe demo.mp4 --lang zh --model small
-python3 main.py burn demo.mp4 --subtitle output/demo/demo.cleaned.srt
-python3 main.py all demo.mp4 --lang zh --model small --style classic
+ffmpeg -re -stream_loop -1 -i demo.mp4 \
+  -c:v libx264 -preset veryfast -tune zerolatency \
+  -c:a aac -f flv rtmp://localhost:1935/live/demo
 ```
 
-安装成命令后：
+探测输入：
 
 ```bash
-autosub all ./examples/sample.mp4 --lang zh --model small --style classic
+python3 -m streamforge.cli probe demo.mp4
 ```
 
-输出目录：
+把文件或 RTSP/RTMP 输入转成本地 HLS：
+
+```bash
+python3 -m streamforge.cli run-channel demo demo.mp4 --hls
+```
+
+同时输出 HLS 并发布到 MediaMTX，获得 WebRTC 预览：
+
+```bash
+python3 -m streamforge.cli run-channel demo demo.mp4 --hls --publish-rtsp
+```
+
+浏览器打开：
 
 ```text
-output/sample/
-├── audio.wav
-├── sample.raw.srt
-├── sample.cleaned.srt
-├── sample.ass
-├── sample_subtitled.mp4
-└── report.json
+http://localhost:8080
 ```
 
-## 常见问题
+MediaMTX WebRTC 播放地址：
 
-**提示找不到 ffmpeg / ffprobe**
+```text
+http://localhost:8889/demo
+```
 
-安装 FFmpeg，并确认 `ffmpeg -version`、`ffprobe -version` 能运行。
+MediaMTX HLS 播放地址：
 
-**提示没有 Whisper 后端**
+```text
+http://localhost:8888/demo/index.m3u8
+```
 
-安装 `faster-whisper` 或 `openai-whisper`。推荐 `faster-whisper`，CPU 环境也比较友好。
+RTSP 播放地址：
 
-**字幕路径含中文或空格**
+```text
+rtsp://localhost:8554/demo
+```
 
-项目使用 `subprocess` 参数列表执行命令，并对 FFmpeg subtitles filter 做了路径转义。
+## 配置式运行
 
-## 项目文档
+编辑 [configs/channels.json](/home/bs/code/ffmpeg/configs/channels.json)：
 
-完整需求见 [ass.md](/home/bs/code/ffmpeg/ass.md)。
+```json
+{
+  "channels": [
+    {
+      "name": "demo",
+      "input": "demo.mp4",
+      "rtsp_transport": "tcp",
+      "hls": true,
+      "publish_rtsp": true,
+      "push_rtmp": null
+    }
+  ]
+}
+```
+
+运行：
+
+```bash
+python3 -m streamforge.cli run-config configs/channels.json
+```
+
+## Dashboard
+
+启动静态页面服务：
+
+```bash
+python3 -m streamforge.cli serve --port 8080
+```
+
+页面会展示常用播放地址、HLS 播放器和 WebRTC 跳转入口。
+
+## 目录
+
+```text
+.
+├── configs/
+│   ├── channels.json
+│   └── mediamtx.yml
+├── docs/
+│   └── ARCHITECTURE.md
+├── runtime/
+│   └── hls/
+├── streamforge/
+│   ├── cli.py
+│   ├── core/
+│   └── web/
+└── tests/
+```
+
+## 说明
+
+WebRTC 不是 FFmpeg 直接输出给浏览器，而是 FFmpeg 发布到 MediaMTX，再由 MediaMTX 提供 WebRTC。这个组合更稳定，也更贴近真实项目。

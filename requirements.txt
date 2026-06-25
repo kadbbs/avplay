@@ -1,2 +1,4 @@
-# Runtime dependency for local transcription.
-faster-whisper>=1.2.1
+# StreamForge core uses only the Python standard library.
+# Runtime system dependencies:
+# - ffmpeg / ffprobe
+# - MediaMTX for RTSP/RTMP/HLS/WebRTC gateway mode

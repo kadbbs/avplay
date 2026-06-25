@@ -1,0 +1,12 @@
+{
+  "channels": [
+    {
+      "name": "demo",
+      "input": "demo.mp4",
+      "rtsp_transport": "tcp",
+      "hls": true,
+      "publish_rtsp": true,
+      "push_rtmp": null
+    }
+  ]
+}

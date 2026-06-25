@@ -1,0 +1,22 @@
+logLevel: info
+
+rtsp: yes
+rtspAddress: :8554
+
+rtmp: yes
+rtmpAddress: :1935
+
+hls: yes
+hlsAddress: :8888
+hlsAlwaysRemux: yes
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: '*'
+
+api: yes
+apiAddress: :9997
+
+paths:
+  all:
+    source: publisher
