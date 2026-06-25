@@ -15,6 +15,9 @@ def build_channel_processes(channel: Channel) -> list[ManagedProcess]:
     logs = channel.runtime_dir / "logs" / channel.name
     processes: list[ManagedProcess] = []
 
+    # Each enabled output is intentionally a separate FFmpeg process. That makes
+    # the commands easy to study and logs easy to inspect. A more advanced
+    # version could use one FFmpeg command with multiple outputs.
     if channel.hls:
         processes.append(
             ManagedProcess(

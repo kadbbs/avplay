@@ -29,6 +29,10 @@ def require_binary(name: str) -> str:
 
 def probe_input(input_url: str) -> MediaProbe:
     require_binary("ffprobe")
+
+    # ffprobe is the safest way to inspect a source before starting a long
+    # FFmpeg job. The JSON output is stable enough to parse without scraping
+    # human-readable logs.
     command = [
         "ffprobe",
         "-v",

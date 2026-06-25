@@ -175,3 +175,10 @@ python3 -m streamforge.cli serve --port 8080
 ## 说明
 
 WebRTC 不是 FFmpeg 直接输出给浏览器，而是 FFmpeg 发布到 MediaMTX，再由 MediaMTX 提供 WebRTC。这个组合更稳定，也更贴近真实项目。
+
+## 学习文档
+
+如果你的目标是熟悉 FFmpeg、RTSP、RTMP、HLS、WebRTC，先读：
+
+- [docs/LEARNING_GUIDE.md](/home/bs/code/ffmpeg/docs/LEARNING_GUIDE.md)
+- [docs/ARCHITECTURE.md](/home/bs/code/ffmpeg/docs/ARCHITECTURE.md)

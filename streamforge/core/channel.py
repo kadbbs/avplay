@@ -7,6 +7,9 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class Channel:
+    # A Channel is the smallest unit in this project: one input stream plus the
+    # outputs we want to produce from it. The name becomes the path name in HLS,
+    # RTSP, RTMP and WebRTC URLs.
     name: str
     input: str
     rtsp_transport: str = "tcp"
@@ -17,6 +20,7 @@ class Channel:
 
     @property
     def hls_dir(self) -> Path:
+        # Local HLS output lives on disk so the dashboard can serve it over HTTP.
         return self.runtime_dir / "hls" / self.name
 
     @property
@@ -25,6 +29,7 @@ class Channel:
 
     @property
     def mediamtx_rtsp_url(self) -> str:
+        # MediaMTX accepts a publisher on this path and then makes it playable.
         return f"rtsp://127.0.0.1:8554/{self.name}"
 
     @property
@@ -45,6 +50,8 @@ def load_channels(path: str | Path) -> list[Channel]:
     data = json.loads(config_path.read_text(encoding="utf-8"))
     channels: list[Channel] = []
     for item in data.get("channels", []):
+        # Keep JSON keys close to Channel fields so config files are easy to
+        # compare with the Python data model while learning.
         channels.append(
             Channel(
                 name=item["name"],
