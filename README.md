@@ -183,10 +183,21 @@ WebRTC 不是 FFmpeg 直接输出给浏览器，而是 FFmpeg 发布到 MediaMTX
 - [docs/LEARNING_GUIDE.md](/home/bs/code/ffmpeg/docs/LEARNING_GUIDE.md)
 - [docs/ARCHITECTURE.md](/home/bs/code/ffmpeg/docs/ARCHITECTURE.md)
 - [docs/WEBRTC_LEARNING_MODE.md](/home/bs/code/ffmpeg/docs/WEBRTC_LEARNING_MODE.md)
+- [docs/CPP_WEBRTC_LEARNING.md](/home/bs/code/ffmpeg/docs/CPP_WEBRTC_LEARNING.md)
 
 启动 WebRTC 原理学习模式：
 
 ```bash
 python3 -m pip install '.[webrtc]'
 python3 -m streamforge.cli webrtc-lab --port 8090
+```
+
+启动 C++ WebRTC DataChannel 学习模式：
+
+```bash
+cmake -S cpp/webrtc_datachannel_lab -B build/webrtc-cpp
+cmake --build build/webrtc-cpp
+
+./build/webrtc-cpp/webrtc_manual_peer --role offer --signal-dir runtime/webrtc-signal
+./build/webrtc-cpp/webrtc_manual_peer --role answer --signal-dir runtime/webrtc-signal
 ```

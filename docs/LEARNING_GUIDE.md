@@ -276,6 +276,12 @@ Browser RTCPeerConnection -> Python aiortc -> generated video track
 docs/WEBRTC_LEARNING_MODE.md
 ```
 
+如果你想用 C++ 学 WebRTC，继续读：
+
+```text
+docs/CPP_WEBRTC_LEARNING.md
+```
+
 启动 MediaMTX：
 
 ```bash
