@@ -54,6 +54,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8080)
 
+    webrtc_lab = sub.add_parser("webrtc-lab", help="启动 WebRTC 原理学习模式")
+    webrtc_lab.add_argument("--host", default="0.0.0.0")
+    webrtc_lab.add_argument("--port", type=int, default=8090)
+
     return parser
 
 
@@ -175,6 +179,11 @@ def main(argv: list[str] | None = None) -> None:
             command_snapshot(args)
         elif args.command == "serve":
             command_serve(args)
+        elif args.command == "webrtc-lab":
+            from streamforge.webrtc_lab.server import run_webrtc_lab
+            import asyncio
+
+            asyncio.run(run_webrtc_lab(args.host, args.port))
     except Exception as exc:
         parser.exit(1, f"{exc}\n")
 

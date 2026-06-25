@@ -2,3 +2,7 @@
 # Runtime system dependencies:
 # - ffmpeg / ffprobe
 # - MediaMTX for RTSP/RTMP/HLS/WebRTC gateway mode
+
+# Optional WebRTC Learning Mode:
+# aiortc>=1.10.0
+# aiohttp>=3.9.0

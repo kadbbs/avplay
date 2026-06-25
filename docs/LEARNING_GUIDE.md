@@ -264,6 +264,18 @@ WebRTC 涉及：
 FFmpeg -> RTSP publish -> MediaMTX -> WebRTC browser playback
 ```
 
+这条是实用路线。项目还提供了 WebRTC Learning Mode：
+
+```text
+Browser RTCPeerConnection -> Python aiortc -> generated video track
+```
+
+如果你想看 SDP offer/answer、ICE 状态和 `RTCPeerConnection` API，继续读：
+
+```text
+docs/WEBRTC_LEARNING_MODE.md
+```
+
 启动 MediaMTX：
 
 ```bash
